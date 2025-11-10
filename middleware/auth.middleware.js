@@ -22,7 +22,9 @@ const authMiddleware = async (req, res, next) => {
     }
 
     if (user.status === "inactive") {
-      return res.status(404).json({ message: "Access denied: User account inactive." });
+      return res
+        .status(404)
+        .json({ message: "Access denied: User account inactive." });
     }
 
     req.user = {

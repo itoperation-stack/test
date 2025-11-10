@@ -7,11 +7,12 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const cors = require("cors");
 const attendance = require("./routers/user/attendance.route");
+const reports = require("./routers/user/report.route");
 
 const app = express();
 
 const corsOptions = {
-  origin: "http://localhost:5173",
+  origin: process.env.BASE_URL,
   credentials: true,
 };
 // middleware
@@ -33,14 +34,16 @@ app.use(
     },
   })
 );
+app.set("trust proxy", true);
 
 app.use("/api/v1", user);
 app.use("/api/v1", attendance);
+app.use("/api/v1", reports);
 
 const PORT = process.env.PORT || 5000;
 
 app.get("/", (req, res) => {
-  res.send("Hello everyone!");
+  res.send("Hello everyone! testin no. 1");
 });
 
 DB_Connection()

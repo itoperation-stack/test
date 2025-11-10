@@ -130,7 +130,12 @@ const getProfile = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized: No user data" });
     }
 
-    const user = await Employee.findById(req.user.id).select("-password");
+    const user = await Employee.findById(req.user.id)
+      .populate("manager", "_id name role email phone department")
+      .populate("senior", "_id name role email phone department")
+      .populate("team.employee", "_id name role email")
+      .lean();
+
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -147,23 +152,20 @@ const getProfile = async (req, res) => {
 
 const updateContactInfo = async (req, res) => {
   try {
-    const employeeId = req.user.id;
     const { email, phone } = req.body;
 
-    // Validate input
     if (!email && !phone) {
       return res
         .status(400)
         .json({ message: "Provide email or phone to update." });
     }
 
-    // Find employee by employeeId
-    const employee = await Employee.findOne({ employeeId });
+    const employee = await Employee.findOne(req.user.id);
+
     if (!employee) {
       return res.status(404).json({ message: "Employee not found." });
     }
 
-    // Update only email and/or phone
     if (email) employee.email = email;
     if (phone) employee.phone = phone;
 

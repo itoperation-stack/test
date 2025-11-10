@@ -15,6 +15,6 @@ router.route("/login").post(login);
 router.route("/send-otp").post(sendOtp);
 router.route("/verify-otp-reset-password").post(verifyOtpAndResetPassword);
 router.route("/getProfile").get(authMiddleware, getProfile);
-router.patch("/update-contact-info", updateContactInfo);
+router.route("/update-contact-info").patch(authMiddleware, updateContactInfo);
 
 module.exports = router;

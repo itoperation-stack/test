@@ -6,27 +6,24 @@ const timezone = require("dayjs/plugin/timezone.js");
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+const TIMEZONE = "Asia/Kolkata";
+
 const clockIn = async (req, res) => {
   try {
     const employeeId = req.user.id;
 
-    // Set timezone explicitly
-    const tz = "Asia/Kolkata"; // change to your timezone if needed
-    const now = dayjs().tz(tz);
+    const clientIp =
+      req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress;
+    console.log(clientIp);
 
-    // Define time limits
-    const fullDayCutOff = now
-      .clone()
-      .hour(10)
-      .minute(15)
-      .second(0)
-      .millisecond(0);
-    const halfDayCutOff = now
-      .clone()
-      .hour(13)
-      .minute(30)
-      .second(0)
-      .millisecond(0);
+    return res.status(400).json(clientIp);
+
+    // Current time in IST
+    const now = dayjs().tz(TIMEZONE);
+
+    // Define cut-offs in IST
+    const fullDayCutOff = now.hour(10).minute(15).second(0).millisecond(0);
+    const halfDayCutOff = now.hour(13).minute(30).second(60).millisecond(0);
 
     // Block attendance after 1:30 PM
     if (now.isAfter(halfDayCutOff)) {
@@ -36,12 +33,12 @@ const clockIn = async (req, res) => {
     }
 
     // Determine attendance status
-    let attendanceStatus = "full-day"; // default
+    let attendanceStatus = "full-day";
     if (now.isAfter(fullDayCutOff) && now.isBefore(halfDayCutOff)) {
       attendanceStatus = "half-day";
     }
 
-    // Get today's date at midnight in the timezone
+    // Today's date at midnight in IST
     const today = now.startOf("day").toDate();
 
     // Find existing attendance record
@@ -70,7 +67,7 @@ const clockIn = async (req, res) => {
       attendance.sessions.push({ clockIn: now.toDate() });
       attendance.isWorking = true;
 
-      // Update status only if it was previously absent
+      // Update status only if previously absent
       if (attendance.status === "absent") {
         attendance.status = attendanceStatus;
       }
@@ -92,13 +89,14 @@ const clockIn = async (req, res) => {
 const clockOut = async (req, res) => {
   try {
     const employeeId = req.user.id;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+
+    // Get today's date in IST
+    const todayStart = dayjs().tz(TIMEZONE).startOf("day").toDate();
 
     // Find today's attendance
     let attendance = await Attendance.findOne({
       employee: employeeId,
-      date: today,
+      date: todayStart,
     });
 
     if (!attendance) {
@@ -112,23 +110,30 @@ const clockOut = async (req, res) => {
         .json({ message: "No active session found to clock out" });
     }
 
-    // Clock out
-    lastSession.clockOut = new Date();
+    // Clock out in IST
+    lastSession.clockOut = dayjs().tz(TIMEZONE).toDate();
     attendance.isWorking = false;
 
-    // Save temporarily to calculate total hours
-    await attendance.save();
+    // Calculate total work milliseconds
+    let totalMs = 0;
+    attendance.sessions.forEach((s) => {
+      if (s.clockIn) {
+        totalMs += dayjs(s.clockOut || dayjs().tz(TIMEZONE)).diff(
+          dayjs(s.clockIn)
+        );
+      }
+    });
 
-    // Update status based on totalWorkHours
-    // Attendance schema pre-save hook already updates totalWorkHours
-    const totalHours = attendance.totalWorkHours;
+    // Convert to hours
+    const totalHours = totalMs / (1000 * 60 * 60);
 
+    // Update status based on worked hours
     if (totalHours < 4) {
       attendance.status = "absent";
     } else if (totalHours >= 4 && totalHours < 7) {
       attendance.status = "half-day";
     } else if (totalHours >= 7) {
-      attendance.status = "present"; // full day
+      attendance.status = "full-day";
     }
 
     await attendance.save();
@@ -136,7 +141,7 @@ const clockOut = async (req, res) => {
     res.json({
       message: "Clock-out successful",
       attendance,
-      totalHours,
+      totalHours: parseFloat(totalHours.toFixed(2)),
     });
   } catch (error) {
     console.error("Clock-out error:", error);
@@ -149,14 +154,14 @@ const getTodayAttendance = async (req, res) => {
   try {
     const employeeId = req.user.id;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Get start and end of today in IST
+    const todayStart = dayjs().tz(TIMEZONE).startOf("day").toDate();
+    const todayEnd = dayjs().tz(TIMEZONE).endOf("day").toDate();
 
     const attendance = await Attendance.findOne({
       employee: employeeId,
-      date: today,
+      date: { $gte: todayStart, $lte: todayEnd }, // range query
     });
-    console.log(attendance);
 
     if (!attendance) {
       return res.json({
@@ -171,30 +176,23 @@ const getTodayAttendance = async (req, res) => {
 
     const lastSession = attendance.sessions[attendance.sessions.length - 1];
 
-    // ✅ calculate total worked ms
     let totalMs = 0;
     attendance.sessions.forEach((s) => {
       if (s.clockIn) {
-        if (s.clockOut) {
-          totalMs += new Date(s.clockOut) - new Date(s.clockIn);
-        } else {
-          totalMs += Date.now() - new Date(s.clockIn);
-        }
+        totalMs += dayjs(s.clockOut || dayjs().tz(TIMEZONE)).diff(
+          dayjs(s.clockIn)
+        );
       }
     });
 
     const totalWorkedSeconds = Math.floor(totalMs / 1000);
 
-    // ✅ derive first clock-in of the day
     const firstClockIn =
       attendance.sessions.find((s) => s.clockIn)?.clockIn || null;
-
-    // ✅ derive last clock-out of the day
     const lastClockOut =
       [...attendance.sessions].reverse().find((s) => s.clockOut)?.clockOut ||
       null;
 
-    // ✅ format total worked time (HH:MM:SS)
     const formatTime = (seconds) => {
       const hrs = Math.floor(seconds / 3600);
       const mins = Math.floor((seconds % 3600) / 60);
@@ -205,24 +203,19 @@ const getTodayAttendance = async (req, res) => {
       )}:${String(secs).padStart(2, "0")}`;
     };
 
+    const formatClockTime = (date) =>
+      date ? dayjs(date).tz(TIMEZONE).format("HH:mm:ss") : null;
+
     res.json({
       isWorking: attendance.isWorking,
       totalWorkedSeconds,
-      workedHours: formatTime(totalWorkedSeconds), // static formatted hours
-      firstClockIn: firstClockIn
-        ? new Date(firstClockIn).toLocaleTimeString()
-        : null,
-      lastClockOut: lastClockOut
-        ? new Date(lastClockOut).toLocaleTimeString()
-        : null,
+      workedHours: formatTime(totalWorkedSeconds),
+      firstClockIn: formatClockTime(firstClockIn),
+      lastClockOut: formatClockTime(lastClockOut),
       lastAction: lastSession?.clockIn
         ? lastSession.clockOut
-          ? `Clocked out at ${new Date(
-              lastSession.clockOut
-            ).toLocaleTimeString()}`
-          : `Clocked in at ${new Date(
-              lastSession.clockIn
-            ).toLocaleTimeString()}`
+          ? `Clocked out at ${formatClockTime(lastSession.clockOut)}`
+          : `Clocked in at ${formatClockTime(lastSession.clockIn)}`
         : "Not working",
     });
   } catch (err) {
@@ -235,24 +228,33 @@ const getTodayAttendance = async (req, res) => {
 const getMonthlyAttendance = async (req, res) => {
   try {
     const { year, month } = req.query; // month: 1-12
-    const employeeId = req.user.id; // from auth middleware
+    const employeeId = req.user.id;
 
     if (!year || !month) {
       return res.status(400).json({ message: "Year and month are required" });
     }
 
-    const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    // Create string for first day of month: 'YYYY-MM-DD'
+    const startString = `${year}-${String(month).padStart(2, "0")}-01`;
+
+    // Start and end of month in IST
+    const startDate = dayjs.tz(startString, TIMEZONE).startOf("day").toDate();
+
+    const endDate = dayjs(startDate)
+      .tz(TIMEZONE)
+      .endOf("month")
+      .endOf("day")
+      .toDate();
 
     const records = await Attendance.find({
       employee: employeeId,
       date: { $gte: startDate, $lte: endDate },
     }).lean();
 
-    // Format into map for easy lookup
+    // Format attendance map with correct day in IST
     const attendanceMap = {};
     records.forEach((r) => {
-      const day = new Date(r.date).getDate();
+      const day = dayjs(r.date).tz(TIMEZONE).date();
       attendanceMap[day] = {
         status: r.status,
         totalWorkHours: r.totalWorkHours,
